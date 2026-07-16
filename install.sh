@@ -1,21 +1,5 @@
 #!/usr/bin/env bash
 
-# Function to display loading animation
-show_loading() {
-    local pid=$!
-    local delay=0.1
-    local spinstr='|/-\'
-    echo -n " "
-    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    echo " "
-}
-
 # Function to check for root access
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -51,10 +35,8 @@ check_root
 # Show system details
 show_system_details
 
-echo -e "\e[34mPreparation ...\e[0m" # Blue color
-{
-    apt install unzip -y > /dev/null 2>&1
-} & show_loading
+echo -e "\e[34m[1/5] Preparation: Installing unzip...\e[0m" # Blue color
+apt install unzip -y
 
 # Latest Stable
 CHR_VERSION=7.21.5
@@ -65,24 +47,43 @@ INTERFACE=$(ip -o -4 route show to default | awk '{print $5}')
 INTERFACE_IP=$(ip addr show $INTERFACE | grep global | cut -d' ' -f 6 | head -n 1)
 INTERFACE_GATEWAY=$(ip route show | grep default | awk '{print $3}')
 
-{
-    wget -qO routeros.zip https://download.mikrotik.com/routeros/$CHR_VERSION/chr-$CHR_VERSION.img.zip && \
-    unzip routeros.zip > /dev/null 2>&1 && \
-    rm -rf routeros.zip
-} & show_loading
+echo -e "\e[34m[2/5] Downloading and extracting MikroTik CHR v$CHR_VERSION...\e[0m" # Blue color
+wget -O routeros.zip https://download.mikrotik.com/routeros/$CHR_VERSION/chr-$CHR_VERSION.img.zip
+unzip routeros.zip
+rm -rf routeros.zip
 
-{
-    mount -o loop,offset=512 chr-$CHR_VERSION.img /mnt > /dev/null 2>&1
-} & show_loading
+echo -e "\e[34m[3/5] Mapping image partitions and configuring IP...\e[0m" # Blue color
+# Membuat loop device dan memetakan partisi secara otomatis
+LOOP_DEV=$(losetup -fP --show chr-$CHR_VERSION.img)
 
-echo "/ip address add address=${INTERFACE_IP} interface=[/interface ethernet find where name=ether1]
+# Mencoba mount partisi 1
+mount ${LOOP_DEV}p1 /mnt 2>/dev/null
+# Jika folder /rw tidak ada, coba mount partisi 2
+if [ ! -d /mnt/rw ]; then
+    umount /mnt 2>/dev/null
+    mount ${LOOP_DEV}p2 /mnt 2>/dev/null
+fi
+
+# Cek apakah folder /rw berhasil ditemukan
+if [ -d /mnt/rw ]; then
+    echo "/ip address add address=${INTERFACE_IP} interface=[/interface ethernet find where name=ether1]
 /ip route add gateway=${INTERFACE_GATEWAY}
 " > /mnt/rw/autorun.scr
+    echo -e "\e[32mAutorun script created successfully.\e[0m"
+else
+    echo -e "\e[33mWarning: Could not find /rw directory. Skipping autorun script injection.\e[0m"
+    echo -e "\e[33mYou may need to configure the IP address manually via VNC/Console after reboot.\e[0m"
+fi
 
-{
-    umount /mnt > /dev/null 2>&1
-    echo u > /proc/sysrq-trigger
-    dd if=chr-$CHR_VERSION.img of=/dev/${DISK} bs=1M > /dev/null 2>&1
-} & show_loading
+echo -e "\e[34m[4/5] Unmounting image...\e[0m" # Blue color
+umount /mnt 2>/dev/null
+losetup -d $LOOP_DEV 2>/dev/null
+echo u > /proc/sysrq-trigger
 
-echo -e "\e[32mInstallation complete. Reboot your server now, Please log in and configure your password using Winbox.\e[0m" # Green color
+echo -e "\e[34m[5/5] Writing image to disk /dev/${DISK}...\e[0m" # Blue color
+dd if=chr-$CHR_VERSION.img of=/dev/${DISK} bs=1M status=progress
+
+echo -e "\e[32m========================================================================\e[0m"
+echo -e "\e[32mInstallation complete. Reboot your server now.\e[0m"
+echo -e "\e[32mPlease log in and configure your password using Winbox or SSH.\e[0m" 
+echo -e "\e[32m========================================================================\e[0m"
